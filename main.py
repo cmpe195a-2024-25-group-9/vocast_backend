@@ -6,10 +6,12 @@ app = FastAPI()
 
 stream_thread = None
 stop_flag = threading.Event()
+IP = None
 
 # Request model
 class StreamControl(BaseModel):
     start: bool
+    IP: str = None
 
 def stream_mic():
     import sounddevice as sd
@@ -18,7 +20,7 @@ def stream_mic():
 
     SAMPLE_RATE = 48000
     CHUNK_SIZE = 256
-    UDP_IP = "10.0.0.12"
+    UDP_IP = IP
     UDP_PORT = 12345
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -43,6 +45,8 @@ def stream_mic():
 @app.post("/stream")
 def control_stream(req: StreamControl):
     global stream_thread
+    global IP 
+    IP = req.IP
 
     if req.start:
         if stream_thread and stream_thread.is_alive():
