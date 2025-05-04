@@ -1,8 +1,9 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import threading
 import socket
+import requests
 
 app = FastAPI()
 
@@ -17,13 +18,17 @@ app.add_middleware(
 stream_thread = None
 stop_flag = threading.Event()
 esp_ip = None # esp ip address to stream audio and display on admin panel for users to connect to
-admin_ip = None # admin ip address to display on admin panel for users to join session
+self_ip = None # admin ip address to display on admin panel for users to join session
 
-# Request model
+# stream request model
 class StreamControl(BaseModel):
     start: bool
     ip: str = None
 
+class ConnectRequest(BaseModel):
+    ip: str
+
+# returns this devices ip address
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -46,8 +51,7 @@ def listen_for_esp_ip():
         data, addr = sock.recvfrom(1024)
         message = data.decode().strip()
         print(f"Received from {addr}: {message}")
-        if message.startswith("ESP IP:"):
-            esp_ip = addr[0]  # Save just the sender's IP
+        esp_ip = addr[0]  # Save just the sender's IP
 
 def stream_mic():
     import sounddevice as sd
@@ -94,7 +98,7 @@ def start_udp_listener():
 # ADMIN endpoint, return IP address of esp
 @app.get("/esp_ip")
 def get_esp_ip():
-    if 'IP' in globals():
+    if esp_ip:
         return {"esp_ip": esp_ip}
     else:
         return {"error": "ESP IP not found"}
@@ -103,11 +107,18 @@ def get_esp_ip():
 @app.get("/admin_ip")
 def read_admin_ip():
     ip = None
-    if admin_ip:
-        ip = admin_ip
+    if self_ip:
+        ip = self_ip
     else:
         ip = get_local_ip()
     return {"admin_ip": ip}
+
+# ADMIN endpoint, handle connection request from user
+# expect user ip address in connection request
+@app.post("/admin_connect_handler")
+def handle_connection(req: ConnectRequest):
+    # TODO save given user ip in a list of active connections
+    return {"status": f"got ip address {req.ip}"}
 
 # USER endpoint, start stream to ESP
 @app.post("/stream")
@@ -128,3 +139,19 @@ def control_stream(req: StreamControl):
             stream_thread.join(timeout=2)
             return {"status": "stream stopped"}
         return {"status": "not streaming"}
+    
+# USER endpoint, request to connection to session given in req (expected to be admin session id/ip)
+@app.post("/connect_to_session")
+def connect_to_session(req: ConnectRequest):
+    # get current ip address, make request to admin_ip provided in post request
+    url = f"http://{req.ip}:8000/admin_connect_handler"
+    payload = {"ip": get_local_ip()}
+
+    try:
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"error": f"Failed to connect to session, status code: {response.status_code}"}
+    except requests.exceptions.RequestException as e:
+        return {"error": f"Request failed: {str(e)}"}
