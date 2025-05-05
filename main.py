@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Body
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import threading
@@ -19,6 +19,7 @@ stream_thread = None
 stop_flag = threading.Event()
 esp_ip = None # esp ip address to stream audio and display on admin panel for users to connect to
 self_ip = None # admin ip address to display on admin panel for users to join session
+active_connections = [] # list of active connections to the admin panel
 
 # stream request model
 class StreamControl(BaseModel):
@@ -27,6 +28,10 @@ class StreamControl(BaseModel):
 
 class ConnectRequest(BaseModel):
     ip: str
+    name: str
+
+class Message(BaseModel):
+    mic_permission: bool
 
 # returns this devices ip address
 def get_local_ip():
@@ -118,7 +123,45 @@ def read_admin_ip():
 @app.post("/admin_connect_handler")
 def handle_connection(req: ConnectRequest):
     # TODO save given user ip in a list of active connections
-    return {"status": f"got ip address {req.ip}"}
+    global active_connections
+    active_connections.append({
+        "address": req.ip,
+        "name": req.name,
+        "status": False
+    })
+
+    return {"message": f"successfully added {req.name} at {req.ip}"}
+
+# ADMIN endpoint, handle connection leave request from user
+# expect user ip address in connection request
+@app.post("/admin_leave_handler")
+def handle_connection(req: ConnectRequest):
+    # TODO save given user ip in a list of active connections
+    global active_connections
+    for conn in active_connections:
+        if conn["address"] == req.ip:
+            active_connections.remove(conn)
+
+    return {"message": f"successfully removed {req.name} at {req.ip}"}
+
+# ADMIN endpoint, return list of active connections
+@app.get("/active_connections")
+def get_active_connections():
+    global active_connections
+    return {"active_connections": active_connections}
+
+# ADMIN endpoint, toggle mic permission for specific connected user/ ip addr 
+# assume payload is ip and name of user being given permission
+@app.post("/toggle_mic_permission")
+def toggle_mic_permission(req: ConnectRequest):
+    global active_connections
+    for conn in active_connections:
+        if conn["address"] == req.ip:
+            conn["status"] = not conn["status"]
+            # TODO send message to user backend that mic permission toggled
+            requests.post(f"http://{req.ip}:8000/receive_message", json={"mic_permission": conn['status']})
+            return {"message": f"Mic permission for {req.name} at {req.ip} toggled to {conn['status']}"}
+    return {"error": "Connection not found"}
 
 # USER endpoint, start stream to ESP
 @app.post("/stream")
@@ -145,7 +188,7 @@ def control_stream(req: StreamControl):
 def connect_to_session(req: ConnectRequest):
     # get current ip address, make request to admin_ip provided in post request
     url = f"http://{req.ip}:8000/admin_connect_handler"
-    payload = {"ip": get_local_ip()}
+    payload = {"ip": get_local_ip(), "name": req.name}
 
     try:
         response = requests.post(url, json=payload)
@@ -155,3 +198,42 @@ def connect_to_session(req: ConnectRequest):
             return {"error": f"Failed to connect to session, status code: {response.status_code}"}
     except requests.exceptions.RequestException as e:
         return {"error": f"Request failed: {str(e)}"}
+    
+# USER endpoint, request to leave session given in req (expected to be admin session id/ip)
+@app.post("/leave_session")
+def leave_session(req: ConnectRequest):
+    # get current ip address, make request to admin_ip provided in post request
+    url = f"http://{req.ip}:8000/admin_leave_handler"
+    payload = {"ip": get_local_ip(), "name": req.name}
+
+    try:
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"error": f"Failed to connect to session, status code: {response.status_code}"}
+    except requests.exceptions.RequestException as e:
+        return {"error": f"Request failed: {str(e)}"}
+    
+websocket = None 
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket_in: WebSocket):
+    global websocket
+    await websocket_in.accept()
+    websocket = websocket_in
+    try: 
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        print("WebSocket disconnected")
+
+# USER endpoint, receive message from admin
+@app.post("/receive_message")
+async def receive_message(req: Message):
+    print(req)
+    await websocket.send_text(str(req.mic_permission))
+    # TODO handle message from admin
+    # this is where the user will receive messages from the admin
+    # for now, just return a success message
+    return {"message": "Message sent successfully"}
