@@ -81,3 +81,23 @@ def broadcast_name(req: Message):
         requests.post(f"http://{conn['address']}:8000/receive_message", json={"msg": f"SPEAKER {req.msg}"})
 
     return {"message": "broadcasted name to all active connections"}
+
+@router.post("/post_question")
+def post_question(req: Message):
+    for conn in active_connections:
+        requests.post(f"http://{conn['address']}:8000/receive_message", json={"msg": f"QUESTION {req.msg}"})
+
+    return {"message": "broadcasted question to all active connections"}
+
+def handle_hand_movement(movement: str, req: ConnectRequest):
+    requests.post(f"http://{req.ip}:8000/receive_message", json={"msg": f"{movement} {req.name}"})
+
+    return {"message": f"alerted admin that user {req.name} has {movement}"}
+
+@router.post("/handle_raise_hand")
+def handle_raise_hand(req: ConnectRequest):
+    return handle_hand_movement("RAISE_HAND", req)
+
+@router.post("/handle_lower_hand")
+def handle_lower_hand(req: ConnectRequest):
+    return handle_hand_movement("LOWER_HAND", req)
